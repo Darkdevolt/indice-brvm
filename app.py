@@ -29,45 +29,58 @@ def scraper_brvm():
     df = pd.DataFrame(rows, columns=headers)
     return df
 
-st.title("📊 Analyse des données de la BRVM")
-st.write("⚠️ Connexion non sécurisée (SSL désactivé temporairement).")
+st.title("📊 Analyse Automatique des Données de la BRVM")
+st.write("⚠️ Connexion SSL désactivée temporairement pour récupérer les données depuis le site officiel.")
 
 try:
     df = scraper_brvm()
 
     if df.empty:
-        st.warning("⚠️ Tableau introuvable ou vide.")
+        st.warning("⚠️ Aucune donnée trouvée. La table peut avoir changé ou être temporairement indisponible.")
     else:
-        st.success("✅ Données récupérées avec succès.")
-        st.write("Colonnes récupérées :", df.columns.tolist())
+        st.success("✅ Données récupérées avec succès depuis le site de la BRVM.")
+        
+        st.subheader("🧾 Colonnes détectées")
+        st.write(df.columns.tolist())
 
-        with st.expander("🔎 Afficher les données brutes"):
-            st.dataframe(df)
+        st.subheader("🔍 Aperçu des premières lignes")
+        st.dataframe(df.head())
 
-        # Vérifie la présence des colonnes avant traitement
-        colonnes_requises = ["Valeur", "Dernier", "Variation", "Volume", "Capitalisation boursière"]
-        colonnes_disponibles = [col for col in colonnes_requises if col in df.columns]
+        # Correspondance possible avec les noms des colonnes
+        # On détecte dynamiquement les noms valides
+        possible_cols = df.columns.str.lower()
 
-        if "Variation" in df.columns:
-            for col in colonnes_disponibles:
-                df[col] = df[col].str.replace(",", "").str.replace("%", "").str.replace(" ", "").replace("", "0").astype(float)
+        col_nom = next((col for col in df.columns if "valeur" in col.lower() or "nom" in col.lower()), None)
+        col_cours = next((col for col in df.columns if "dernier" in col.lower() or "cours" in col.lower()), None)
+        col_var = next((col for col in df.columns if "variation" in col.lower()), None)
 
-            top_variation = df.sort_values(by="Variation", ascending=False).head(10)
-            worst_variation = df.sort_values(by="Variation").head(10)
+        if all([col_nom, col_cours, col_var]):
+            st.markdown("### ✅ Colonnes utilisées pour l'analyse")
+            st.write(f"- Nom/Valeur : `{col_nom}`")
+            st.write(f"- Cours Dernier : `{col_cours}`")
+            st.write(f"- Variation : `{col_var}`")
+
+            # Nettoyage
+            df[col_var] = df[col_var].str.replace(",", "").str.replace("%", "").str.replace(" ", "").replace("", "0").astype(float)
+            df[col_cours] = df[col_cours].str.replace(",", "").str.replace(" ", "").replace("", "0").astype(float)
+
+            # Classement des variations
+            top = df.sort_values(by=col_var, ascending=False).head(10)
+            flop = df.sort_values(by=col_var).head(10)
 
             col1, col2 = st.columns(2)
             with col1:
-                st.markdown("### 🔼 Top 10 hausses")
-                st.dataframe(top_variation[["Valeur", "Dernier", "Variation"]])
+                st.markdown("### 🔼 Top 10 Performers")
+                st.dataframe(top[[col_nom, col_cours, col_var]])
             with col2:
-                st.markdown("### 🔽 Top 10 baisses")
-                st.dataframe(worst_variation[["Valeur", "Dernier", "Variation"]])
+                st.markdown("### 🔽 Flop 10")
+                st.dataframe(flop[[col_nom, col_cours, col_var]])
 
             st.markdown("---")
-            st.bar_chart(top_variation.set_index("Valeur")["Variation"])
-        else:
-            st.error("❌ Colonnes nécessaires non présentes dans la table récupérée.")
+            st.bar_chart(top.set_index(col_nom)[col_var])
 
+        else:
+            st.error("❌ Colonnes essentielles manquantes. Impossible d’analyser.")
 except Exception as e:
     st.error("❌ Une erreur s’est produite lors du chargement des données.")
     st.exception(e)
