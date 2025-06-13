@@ -7,92 +7,119 @@ from datetime import datetime
 import plotly.express as px
 import plotly.graph_objects as go
 
-def get_brvm_index():
+def get_brvm_data():
     """
-    Récupère les données des indices BRVM depuis le site officiel
-    Adaptation Python du code R fourni
+    Récupère les données des actions et indices BRVM depuis Sika Finance
     """
     try:
-        # Récupération de la page web
-        url = "https://www.brvm.org/en/indices/status/200"
-        response = requests.get(url, timeout=10)
+        # Headers pour simuler un navigateur
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'fr-FR,fr;q=0.9,en;q=0.8',
+            'Accept-Encoding': 'gzip, deflate',
+            'Connection': 'keep-alive',
+        }
+        
+        # Récupération de la page palmares
+        url = "https://www.sikafinance.com/marches/palmares"
+        response = requests.get(url, headers=headers, timeout=15)
         response.raise_for_status()
         
         # Parse du HTML
         soup = BeautifulSoup(response.content, 'html.parser')
-        tables = soup.find_all('table')
         
-        if len(tables) >= 4:
-            # Récupération du 4ème tableau (index 3)
-            table = tables[3]
+        # Recherche des tableaux contenant les données
+        tables = soup.find_all('table')
+        all_data = []
+        
+        for table in tables:
+            # Extraction des en-têtes
+            headers_row = table.find('thead')
+            if not headers_row:
+                headers_row = table.find('tr')
             
-            # Extraction des données du tableau
-            headers = []
-            rows = []
+            if headers_row:
+                headers = [th.get_text(strip=True) for th in headers_row.find_all(['th', 'td'])]
+                
+                # Recherche des lignes de données
+                tbody = table.find('tbody')
+                rows = tbody.find_all('tr') if tbody else table.find_all('tr')[1:]  # Skip header row
+                
+                for row in rows:
+                    cells = [td.get_text(strip=True) for td in row.find_all(['td', 'th'])]
+                    if len(cells) >= 3 and cells[0]:  # Au moins nom, cours, variation
+                        all_data.append(cells)
+        
+        # Si pas de données trouvées dans les tableaux, essayer une approche différente
+        if not all_data:
+            # Recherche par classes CSS spécifiques à Sika Finance
+            stock_rows = soup.find_all(['tr', 'div'], class_=re.compile(r'(stock|action|valeur)', re.I))
+            for row in stock_rows:
+                text_content = row.get_text(strip=True)
+                if text_content and '%' in text_content:
+                    # Extraction basique des données si structure non standard
+                    parts = re.split(r'\s+', text_content)
+                    if len(parts) >= 3:
+                        all_data.append(parts[:6])  # Limiter à 6 colonnes max
+        
+        # Création du DataFrame si des données ont été trouvées
+        if all_data:
+            # Détermination du nombre de colonnes le plus fréquent
+            col_counts = {}
+            for row in all_data:
+                count = len(row)
+                col_counts[count] = col_counts.get(count, 0) + 1
             
-            # Récupération des en-têtes
-            header_row = table.find('thead')
-            if header_row:
-                headers = [th.get_text(strip=True) for th in header_row.find_all('th')]
+            most_common_cols = max(col_counts.keys(), key=lambda x: col_counts[x])
             
-            # Récupération des données
-            tbody = table.find('tbody')
-            if tbody:
-                for row in tbody.find_all('tr'):
-                    cells = [td.get_text(strip=True) for td in row.find_all('td')]
-                    if cells:  # Éviter les lignes vides
-                        rows.append(cells)
+            # Filtrage des lignes avec le bon nombre de colonnes
+            filtered_data = [row for row in all_data if len(row) == most_common_cols]
             
-            # Création du DataFrame
-            if rows and headers:
-                df = pd.DataFrame(rows, columns=headers[:len(rows[0])])
+            if filtered_data:
+                # Création des colonnes génériques
+                columns = ['Nom', 'Cours', 'Variation', 'Variation_%']
+                if most_common_cols > 4:
+                    columns.extend([f'Col_{i}' for i in range(5, most_common_cols + 1)])
+                else:
+                    columns = columns[:most_common_cols]
                 
-                # Nettoyage des données selon le code R original
-                if 'Previous closing' in df.columns:
-                    df['Previous closing'] = df['Previous closing'].str.replace(' ', '').str.replace(',', '.')
-                    df['Previous closing'] = pd.to_numeric(df['Previous closing'], errors='coerce')
+                df = pd.DataFrame(filtered_data, columns=columns)
                 
-                if 'Closing' in df.columns:
-                    df['Closing'] = df['Closing'].str.replace(' ', '').str.replace(',', '.')
-                    df['Closing'] = pd.to_numeric(df['Closing'], errors='coerce')
-                
-                if 'Change (%)' in df.columns:
-                    df['Change (%)'] = df['Change (%)'].str.replace(',', '.')
-                    df['Change (%)'] = pd.to_numeric(df['Change (%)'], errors='coerce')
-                
-                if 'Year to Date Change' in df.columns:
-                    df['Year to Date Change'] = df['Year to Date Change'].str.replace(',', '.')
-                    df['Year to Date Change'] = pd.to_numeric(df['Year to Date Change'], errors='coerce')
-                
-                # Renommage des colonnes selon le code R
-                new_columns = {
-                    'Indexes': 'Indexes',
-                    'Previous closing': 'Previous closing',
-                    'Closing': 'Closing',
-                    'Change (%)': 'Change (%)',
-                    'Year to Date Change': 'Year to Date Change'
-                }
-                
-                # Garder seulement les colonnes nécessaires
-                available_columns = [col for col in new_columns.keys() if col in df.columns]
-                df = df[available_columns]
-                
-                # Renommage des secteurs selon le code R
-                if 'Indexes' in df.columns:
-                    df['Indexes'] = df['Indexes'].str.replace('BRVM - INDUSTRIE', 'BRVM - INDUSTRY')
-                    df['Indexes'] = df['Indexes'].str.replace('BRVM - AUTRES SECTEURS', 'BRVM - OTHER SECTOR')
-                    df['Indexes'] = df['Indexes'].str.replace('SERVICES PUBLICS', 'PUBLIC SERVICES')
+                # Nettoyage des données numériques
+                for col in df.columns:
+                    if col in ['Cours', 'Variation', 'Variation_%'] or 'Col_' in col:
+                        # Nettoyage des valeurs numériques
+                        df[col] = df[col].astype(str).str.replace(r'[^\d.,%-]', '', regex=True)
+                        df[col] = df[col].str.replace(',', '.')
+                        df[col] = df[col].str.replace('%', '')
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
                 
                 return df
-            
-        return None
+        
+        # Si aucune donnée structurée n'est trouvée, retourner des données de démonstration
+        demo_data = {
+            'Nom': ['BRVM COMPOSITE', 'BRVM 30', 'BRVM INDUSTRY', 'BRVM FINANCE', 'BRVM AGRICULTURE'],
+            'Cours': [245.50, 89.25, 156.78, 198.45, 134.67],
+            'Variation': [2.15, -0.45, 1.23, 0.89, -1.12],
+            'Variation_%': [0.88, -0.50, 0.79, 0.45, -0.82]
+        }
+        
+        st.warning("⚠️ Données de démonstration affichées. Vérifiez la connexion au site Sika Finance.")
+        return pd.DataFrame(demo_data)
         
     except requests.RequestException as e:
-        st.error(f"Erreur de connexion: {e}")
+        st.error(f"❌ Erreur de connexion à Sika Finance: {e}")
         return None
     except Exception as e:
-        st.error(f"Erreur lors du traitement des données: {e}")
+        st.error(f"❌ Erreur lors du traitement des données: {e}")
         return None
+
+def get_brvm_index():
+    """
+    Fonction de compatibilité - utilise get_brvm_data()
+    """
+    return get_brvm_data()
 
 def main():
     st.set_page_config(
@@ -102,17 +129,18 @@ def main():
         initial_sidebar_state="expanded"
     )
     
-    st.title("📈 Tableau de Bord des Indices BRVM")
+    st.title("📈 Tableau de Bord BRVM - Sika Finance")
+    st.markdown("*Données en temps réel depuis Sika Finance*")
     st.markdown("---")
     
     # Sidebar
     st.sidebar.header("Navigation")
     page = st.sidebar.selectbox(
         "Choisir une page",
-        ["Aperçu des Indices", "Analyse Détaillée", "À propos"]
+        ["Palmarès BRVM", "Analyse Détaillée", "À propos"]
     )
     
-    if page == "Aperçu des Indices":
+    if page == "Palmarès BRVM":
         show_overview()
     elif page == "Analyse Détaillée":
         show_detailed_analysis()
@@ -120,18 +148,18 @@ def main():
         show_about()
 
 def show_overview():
-    st.header("📊 Aperçu des Indices BRVM")
+    st.header("📊 Palmarès BRVM - Sika Finance")
     
     # Bouton de rafraîchissement
     if st.button("🔄 Actualiser les données"):
         st.cache_data.clear()
     
     # Chargement des données
-    with st.spinner("Chargement des données BRVM..."):
-        data = get_brvm_index()
+    with st.spinner("Chargement des données depuis Sika Finance..."):
+        data = get_brvm_data()
     
     if data is not None and not data.empty:
-        st.success(f"✅ Données récupérées avec succès! ({len(data)} indices)")
+        st.success(f"✅ Données récupérées avec succès! ({len(data)} valeurs)")
         
         # Affichage de la date de mise à jour
         st.info(f"🕒 Dernière mise à jour: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -139,104 +167,244 @@ def show_overview():
         # Métriques principales
         col1, col2, col3, col4 = st.columns(4)
         
-        if 'Change (%)' in data.columns:
-            positive_changes = len(data[data['Change (%)'] > 0])
-            negative_changes = len(data[data['Change (%)'] < 0])
-            avg_change = data['Change (%)'].mean()
-            max_change = data['Change (%)'].max()
+        # Analyse des variations (utilise la colonne Variation ou Variation_%)
+        variation_col = None
+        if 'Variation_%' in data.columns:
+            variation_col = 'Variation_%'
+        elif 'Variation' in data.columns:
+            variation_col = 'Variation'
+        
+        if variation_col and data[variation_col].notna().any():
+            positive_changes = len(data[data[variation_col] > 0])
+            negative_changes = len(data[data[variation_col] < 0])
+            avg_change = data[variation_col].mean()
+            max_change = data[variation_col].max()
             
             with col1:
-                st.metric("📈 Indices en hausse", positive_changes)
+                st.metric("📈 Valeurs en hausse", positive_changes)
             with col2:
-                st.metric("📉 Indices en baisse", negative_changes)
+                st.metric("📉 Valeurs en baisse", negative_changes)
             with col3:
                 st.metric("📊 Variation moyenne", f"{avg_change:.2f}%")
             with col4:
                 st.metric("🚀 Plus forte hausse", f"{max_change:.2f}%")
         
-        # Tableau des données
-        st.subheader("📋 Données des Indices")
+        # Tableau des données avec filtres
+        st.subheader("📋 Données du Palmarès")
+        
+        # Filtre par type de valeur si applicable
+        if 'Nom' in data.columns:
+            # Filtre de recherche
+            search_term = st.text_input("🔍 Rechercher une valeur:", "").upper()
+            if search_term:
+                data = data[data['Nom'].str.upper().str.contains(search_term, na=False)]
         
         # Style du tableau
         styled_data = data.copy()
-        if 'Change (%)' in styled_data.columns:
-            def color_change(val):
+        if variation_col in styled_data.columns:
+            def color_variation(val):
                 if pd.isna(val):
                     return ''
                 elif val > 0:
-                    return 'color: green'
+                    return 'color: green; font-weight: bold'
                 elif val < 0:
-                    return 'color: red'
+                    return 'color: red; font-weight: bold'
                 else:
                     return ''
             
-            styled_data = styled_data.style.applymap(color_change, subset=['Change (%)'])
+            # Application du style seulement si la colonne existe
+            styled_data = styled_data.style.applymap(color_variation, subset=[variation_col])
         
         st.dataframe(styled_data, use_container_width=True)
         
-        # Graphique des variations
-        if 'Change (%)' in data.columns and 'Indexes' in data.columns:
-            st.subheader("📈 Variations des Indices")
-            
-            fig = px.bar(
-                data, 
-                x='Indexes', 
-                y='Change (%)',
-                color='Change (%)',
-                color_continuous_scale=['red', 'white', 'green'],
-                title="Variations journalières des indices BRVM"
-            )
-            fig.update_layout(xaxis_tickangle=-45)
-            st.plotly_chart(fig, use_container_width=True)
-        
-    else:
-        st.error("❌ Impossible de récupérer les données. Vérifiez votre connexion internet.")
-
-def show_detailed_analysis():
-    st.header("🔍 Analyse Détaillée")
-    
-    data = get_brvm_index()
-    
-    if data is not None and not data.empty:
-        # Sélection d'un indice
-        if 'Indexes' in data.columns:
-            selected_index = st.selectbox("Choisir un indice:", data['Indexes'].tolist())
-            
-            # Données de l'indice sélectionné
-            index_data = data[data['Indexes'] == selected_index].iloc[0]
+        # Graphiques des variations
+        if variation_col and 'Nom' in data.columns and data[variation_col].notna().any():
+            st.subheader("📈 Visualisations des Performances")
             
             col1, col2 = st.columns(2)
             
             with col1:
-                st.subheader(f"📊 {selected_index}")
-                if 'Closing' in index_data:
-                    st.metric("Clôture", f"{index_data['Closing']:.2f}")
-                if 'Previous closing' in index_data:
-                    st.metric("Clôture précédente", f"{index_data['Previous closing']:.2f}")
-                if 'Change (%)' in index_data:
-                    st.metric("Variation (%)", f"{index_data['Change (%)']:.2f}%")
-                if 'Year to Date Change' in index_data:
-                    st.metric("Variation YTD", f"{index_data['Year to Date Change']:.2f}%")
+                # Top 10 des hausses
+                top_gains = data.nlargest(10, variation_col)
+                if not top_gains.empty:
+                    fig_gains = px.bar(
+                        top_gains, 
+                        x='Nom', 
+                        y=variation_col,
+                        color=variation_col,
+                        color_continuous_scale=['red', 'yellow', 'green'],
+                        title="Top 10 des plus fortes hausses"
+                    )
+                    fig_gains.update_layout(xaxis_tickangle=-45)
+                    st.plotly_chart(fig_gains, use_container_width=True)
             
             with col2:
-                # Graphique circulaire des variations
-                if 'Change (%)' in data.columns:
-                    positive_count = len(data[data['Change (%)'] > 0])
-                    negative_count = len(data[data['Change (%)'] < 0])
-                    neutral_count = len(data[data['Change (%)'] == 0])
+                # Top 10 des baisses
+                top_losses = data.nsmallest(10, variation_col)
+                if not top_losses.empty:
+                    fig_losses = px.bar(
+                        top_losses, 
+                        x='Nom', 
+                        y=variation_col,
+                        color=variation_col,
+                        color_continuous_scale=['red', 'yellow', 'green'],
+                        title="Top 10 des plus fortes baisses"
+                    )
+                    fig_losses.update_layout(xaxis_tickangle=-45)
+                    st.plotly_chart(fig_losses, use_container_width=True)
+            
+            # Distribution des variations
+            if len(data) > 5:
+                fig_hist = px.histogram(
+                    data, 
+                    x=variation_col,
+                    nbins=20,
+                    title="Distribution des variations",
+                    labels={variation_col: "Variation (%)", 'count': 'Nombre de valeurs'}
+                )
+                st.plotly_chart(fig_hist, use_container_width=True)
+        
+        # Secteur d'activité si disponible
+        if 'Nom' in data.columns:
+            # Tentative d'identification des secteurs par le nom
+            sectors = []
+            for name in data['Nom']:
+                if any(word in name.upper() for word in ['BANK', 'BANQUE', 'FINANCE']):
+                    sectors.append('Finance')
+                elif any(word in name.upper() for word in ['INDUSTRY', 'INDUSTRIE', 'MANUFACTURE']):
+                    sectors.append('Industrie')
+                elif any(word in name.upper() for word in ['AGRI', 'PALM', 'RUBBER']):
+                    sectors.append('Agriculture')
+                elif any(word in name.upper() for word in ['TELECOM', 'TRANSPORT']):
+                    sectors.append('Services')
+                else:
+                    sectors.append('Autres')
+            
+            data['Secteur'] = sectors
+            
+            # Graphique par secteur
+            if variation_col:
+                sector_perf = data.groupby('Secteur')[variation_col].mean().reset_index()
+                fig_sector = px.pie(
+                    sector_perf, 
+                    values=variation_col, 
+                    names='Secteur',
+                    title="Performance moyenne par secteur"
+                )
+                st.plotly_chart(fig_sector, use_container_width=True)
+        
+    else:
+        st.error("❌ Impossible de récupérer les données depuis Sika Finance.")
+        st.info("💡 Vérifiez votre connexion internet ou réessayez plus tard.")
+
+def show_detailed_analysis():
+    st.header("🔍 Analyse Détaillée")
+    
+    data = get_brvm_data()
+    
+    if data is not None and not data.empty:
+        # Sélection d'une valeur
+        if 'Nom' in data.columns:
+            selected_stock = st.selectbox("Choisir une valeur:", data['Nom'].tolist())
+            
+            # Données de la valeur sélectionnée
+            stock_data = data[data['Nom'] == selected_stock].iloc[0]
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.subheader(f"📊 {selected_stock}")
+                
+                # Affichage des métriques disponibles
+                for col in data.columns:
+                    if col != 'Nom' and col in stock_data and pd.notna(stock_data[col]):
+                        value = stock_data[col]
+                        if isinstance(value, (int, float)):
+                            if 'Variation' in col or '%' in col:
+                                st.metric(col, f"{value:.2f}%")
+                            else:
+                                st.metric(col, f"{value:.2f}")
+                        else:
+                            st.metric(col, str(value))
+            
+            with col2:
+                # Graphique de comparaison avec le marché
+                variation_col = None
+                if 'Variation_%' in data.columns:
+                    variation_col = 'Variation_%'
+                elif 'Variation' in data.columns:
+                    variation_col = 'Variation'
+                
+                if variation_col and data[variation_col].notna().any():
+                    # Graphique de positionnement par rapport au marché
+                    market_avg = data[variation_col].mean()
+                    stock_var = stock_data[variation_col] if pd.notna(stock_data[variation_col]) else 0
                     
-                    fig = go.Figure(data=[go.Pie(
-                        labels=['Positives', 'Négatives', 'Neutres'],
-                        values=[positive_count, negative_count, neutral_count],
-                        hole=.3
-                    )])
-                    fig.update_traces(hoverinfo='label+percent', textinfo='value+percent')
-                    fig.update_layout(title="Répartition des variations")
+                    comparison_data = pd.DataFrame({
+                        'Métrique': ['Marché (moyenne)', selected_stock],
+                        'Variation': [market_avg, stock_var]
+                    })
+                    
+                    fig = px.bar(
+                        comparison_data,
+                        x='Métrique',
+                        y='Variation',
+                        color='Variation',
+                        color_continuous_scale=['red', 'yellow', 'green'],
+                        title=f"Comparaison avec le marché"
+                    )
                     st.plotly_chart(fig, use_container_width=True)
         
-        # Tableau de corrélation (si pertinent)
-        st.subheader("📈 Statistiques Générales")
+        # Analyse du marché global
+        st.subheader("📊 Analyse du Marché Global")
+        
+        variation_col = None
+        if 'Variation_%' in data.columns:
+            variation_col = 'Variation_%'
+        elif 'Variation' in data.columns:
+            variation_col = 'Variation'
+        
+        if variation_col and data[variation_col].notna().any():
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.metric(
+                    "📈 Tendance générale",
+                    "Haussière" if data[variation_col].mean() > 0 else "Baissière"
+                )
+            
+            with col2:
+                volatility = data[variation_col].std()
+                st.metric("📊 Volatilité", f"{volatility:.2f}%")
+            
+            with col3:
+                range_var = data[variation_col].max() - data[variation_col].min()
+                st.metric("📏 Amplitude", f"{range_var:.2f}%")
+            
+            # Box plot des variations
+            fig_box = px.box(
+                data,
+                y=variation_col,
+                title="Distribution des variations du marché"
+            )
+            st.plotly_chart(fig_box, use_container_width=True)
+        
+        # Tableau de corrélation si plusieurs colonnes numériques
         numeric_columns = data.select_dtypes(include=[float, int]).columns
+        if len(numeric_columns) > 1:
+            st.subheader("🔗 Analyse de Corrélation")
+            correlation_matrix = data[numeric_columns].corr()
+            
+            fig_corr = px.imshow(
+                correlation_matrix,
+                text_auto=True,
+                aspect="auto",
+                title="Matrice de corrélation"
+            )
+            st.plotly_chart(fig_corr, use_container_width=True)
+        
+        # Statistiques descriptives
+        st.subheader("📈 Statistiques Descriptives")
         if len(numeric_columns) > 0:
             st.dataframe(data[numeric_columns].describe(), use_container_width=True)
     
